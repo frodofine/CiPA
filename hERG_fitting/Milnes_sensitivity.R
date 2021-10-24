@@ -1,6 +1,6 @@
 # File:         Milnes_sensitivity.R
 # Author:       Kelly Chang
-# Date:         Sep 2017
+# Date:         Oct 2017
 # Version:      1.0
 # 
 # Description:  R script to do sensitivity analysis using hERG bootstrap
@@ -11,30 +11,15 @@
 #               line option "-h".
 #
 
-proc_start<-proc.time()
-
-#--- specify command line arguments
-library(optparse)
-
-parser<-OptionParser()
-parser<-add_option(parser, c("-d", "--drug"), default="dofetilide,cisapride,bepridil,verapamil,terfenadine,ranolazine,sotalol,mexiletine,quinidine,ondansetron,diltiazem,chlorpromazine", help="Drug name(s), comma separated [default is 12 CiPA training drugs]")
-
-args<-parse_args(parser)
-
 #--- load libraries
 library(deSolve)
 library(FME)
 library(ggplot2)
-print(sessionInfo())
 
-isWindows<-Sys.info()[["sysname"]]=="Windows"
-
-#--- process arguments
-drugstr<-gsub(" ","",args$drug)
-drugnames<-strsplit(drugstr, ",")[[1]]
+source("setup_hERG_fitting.R")
 
 #--- function for running Milnes simulation
-solveMilnes<-function(fitpars, conc, times=peaktimes){
+solveMilnes<-function(fitpars, conc, hergmodel, nbeats, times=peaktimes){
     # run simulation
     drugsweeps<-hergmodel$run_drug(fitpars, conc) # from setupfile
     if(length(drugsweeps)==0)
@@ -42,6 +27,9 @@ solveMilnes<-function(fitpars, conc, times=peaktimes){
 
     outdf<-data.frame()
     startt<-0
+    
+    ctlsweeps <- hergmodel$controlsweeps()
+    
     for(i in 1:nbeats){
         ctltime<-ctlsweeps[[i]][,"time"]
         idxout<-ctltime%in%times
@@ -49,29 +37,27 @@ solveMilnes<-function(fitpars, conc, times=peaktimes){
         drugO<-drugsweeps[[i]][idxout,"O"]
         drugFrac<-drugO/ctlsweeps[[i]][idxout,"O"]
         outdf<-rbind(outdf,data.frame(time=drugtime,O=drugO,frac=drugFrac))
-        startt<-startt+tail(fulltimes,1)
+        startt<-startt+tail(hergmodel$fulltimes(),1)
     } # for beats
 
     outdf
 } # solveMilnes
 
-for(drug in drugnames){
+milnes_sensitivity <- function(drug, drug_boots, fitpars, boot_results) {
     #--- setupfile used in fitting
-    print(drug)
-    boot_num<-0
-    setupfile<-"setup_hERG_fitting.R"
-    source(setupfile)
+    drug_boot <- drug_boots[[drug]]
+    setup <- setup_hERG_fitting(drug, 0, drug_boots)
+
+    concvec<-names(setup$fracdata)
+    
     conc_vec<-as.numeric(concvec) # concvec from setupfile is characters
     print(conc_vec)
 
     #--- get fitting and bootstrap results
-    outdir<-sprintf("results/%s/",drug)
-    tmp<-read.table(paste0(outdir,"pars.txt"), header=FALSE, row.names=1)
-    fitpars<-t(tmp)[1,]
-    bootpars<-na.omit(read.csv(paste0(outdir,"boot_pars.csv")))
+    bootpars <- boot_results %>% select(-boot)
 
-    bootpars<-bootpars[,pnames] # pnames from setupfile
-    fitpars<-fitpars[pnames]
+    bootpars<-bootpars[,setup$pnames] # pnames from setupfile
+    fitpars<-fitpars[setup$pnames]
 
     print(fitpars)
     print(head(bootpars))
@@ -81,11 +67,11 @@ for(drug in drugnames){
     sensdf<-data.frame()
     for(conc in conc_vec){
         # output times from data (1st sweep)
-        deptime<-fracdata[[as.character(conc)]][[1]][,"time"]
+        deptime<-setup$fracdata[[as.character(conc)]][[1]][,"time"]
 
         # specify drug conc
         print(sprintf("concentration = %g nM",conc))
-        sR<-sensRange(solveMilnes, parms=fitpars, sensvar="frac", parInput=bootpars, num=nrow(bootpars), conc=conc, times=deptime)
+        sR<-sensRange(solveMilnes, parms=fitpars, sensvar="frac", parInput=bootpars, num=nrow(bootpars), conc=conc, times=deptime, hergmod = setup$hergmod, nbeats = setup$nbeats)
 
         # save summary of traces
         summ.sR<-summary(sR)
@@ -95,8 +81,8 @@ for(drug in drugnames){
         summ.sR[,"q97.5"]<-apply(sR[,(length(fitpars)+1):ncol(sR)], 2, FUN=function(x) quantile(x, probs = 0.975))
 
         # only save depolarization time
-        for(i in 1:nbeats){
-            beatstart<-(i-1)*tail(fulltimes,1)
+        for(i in 1:setup$nbeats){
+            beatstart<-(i-1)*tail(setup$hergmod$fulltimes(),1)
             beatlim<-range(deptime)+beatstart
             preddf<-as.data.frame(summ.sR[summ.sR[,"x"]>=beatlim[1] & summ.sR[,"x"]<=beatlim[2],])
             rownames(preddf)<-NULL
@@ -106,7 +92,7 @@ for(drug in drugnames){
             sensdf<-rbind(sensdf,preddf)
 
             # get data
-            meandf<-fracdata[[as.character(conc)]][[i]]
+            meandf<-setup$fracdata[[as.character(conc)]][[i]]
             meandf<-meandf[meandf$time%in%preddf$x,]
             ilow<-unique(c(seq(1,nrow(meandf),by=5), nrow(meandf))) # every 5th point
             meandf<-meandf[ilow,]
@@ -115,9 +101,6 @@ for(drug in drugnames){
             datadf<-rbind(datadf,meandf)
         }
     }
-
-    # save results
-    saveRDS(sensdf, paste0(outdir,"sensRange_summary.rds"))
 
     # plot results
     sensdf$x<-sensdf$x-940
@@ -149,7 +132,7 @@ for(drug in drugnames){
     p<-p+theme_bw()
     p<-p+theme(plot.title=element_text(hjust=0.5), legend.position=c(0.875,0.15), 
             panel.grid.major=element_blank(), panel.grid.minor=element_blank())
-    ggsave(paste0("figs/",drug,"_sensRange.png"), p, width=8, height=4)
-}# for drug
-
-print(proc.time()-proc_start)
+    ggsave(paste0("figs/",drug,"_sensRange.pdf"), p, width=8, height=4)
+    
+    sensdf
+}
