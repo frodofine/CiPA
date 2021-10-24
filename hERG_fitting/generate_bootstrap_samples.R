@@ -1,6 +1,6 @@
 # File:         generate_bootstrap_samples.R
 # Author:       Kelly Chang
-# Date:         Sep 2017
+# Date:         Oct 2017
 # Version:      1.0
 # 
 # Description:  R script to generate bootstrap samples from hERG channel
@@ -14,50 +14,42 @@
 #               line option "-h".
 #
 
-#--- specify command line arguments
-library(optparse)
-
-parser<-OptionParser()
-parser<-add_option(parser, c("-d", "--drug"), default="dofetilide,cisapride,bepridil,verapamil,terfenadine,ranolazine,sotalol,mexiletine,quinidine,ondansetron,diltiazem,chlorpromazine", help="Drug name(s), comma separated [default is 12 CiPA training drugs]")
-parser<-add_option(parser, c("-n", "--nboots"), default=2000, type="integer", help="Number of bootstrap samples")
-parser<-add_option(parser, c("-s", "--seed"), default=100, type="integer", help="Random seed [default 100]")
-
-args<-parse_args(parser)
-
 #--- load libraries
 library(boot)
-library(parallel)
-print(sessionInfo())
+library(vroom)
+library(dplyr, quietly = T, warn.conflicts = F)
+library(stringr)
 
-#--- process arguments
-drugstr<-gsub(" ","",args$drug)
-drugnames<-strsplit(drugstr, ",")[[1]]
-nboots<-args$nboots
-seednum<-args$seed
+generate_file_names <- function(drugnames, dir) {
+    purrr::map_chr(drugnames, function(d){
+        file.path(dir, str_c(d, ".csv.xz"))
+    }) %>% setNames(drugnames)
+}
 
-#--- sample with replacement using boot package
-set.seed(seednum, kind="L'Ecuyer-CMRG")
-s<-.Random.seed
-for(tid in seq_along(drugnames)){
-    drug<-drugnames[tid]
-    print(drug)
+generate_bootstrap_samples <- function(drugnames, nboots = 2000, seed = 100) {
 
-    # set random seed
-    if(tid>1) s<-nextRNGStream(s)
-    .Random.seed<-s
+    #--- sample with replacement using boot package
+    set.seed(seed, kind="L'Ecuyer-CMRG")
+    
+    s <- .Random.seed
+    
+    purrr::map(drugnames, function(drug) {
+        # read in Milnes cell data
+        datadf<-vroom::vroom(drug, show_col_types = F) %>%
+            arrange(conc,exp,sweep,time)
 
-    # read in Milnes cell data
-    datadf<-read.csv(paste0("data/",drug,".csv"))
-    datadf<-datadf[with(datadf,order(conc,exp,sweep,time)),]
-
-    # data frame of experiments
-    expdf<-unique(datadf[,c("conc","exp")])
-
-    # generate bootstrap samples
-    boot.out<-boot(data=expdf, statistic=function(datadf, idx){mean(datadf[idx,"exp"])}, R=nboots, strata=as.factor(expdf$conc))
-
-    # save boot object
-    outdir<-sprintf("results/%s/",drug)
-    system(paste0("mkdir -p ",outdir))
-    saveRDS(boot.out,paste0(outdir,"boot_out.rds"))
-}# for tid
+        # data frame of experiments
+        expdf <- datadf %>% select(conc, exp) %>% distinct()
+        
+        # generate bootstrap samples
+        boot.out <-boot (data=expdf, statistic = function(datadf, idx){
+            mean(datadf$exp[idx])
+        }, R=nboots, strata=as.factor(expdf$conc))
+        
+        # set random seed
+        s <- parallel::nextRNGStream(s)
+        .Random.seed <- s
+        
+        boot.out
+    })
+}
