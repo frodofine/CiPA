@@ -1,6 +1,6 @@
 # File:         get_boot_data.R
 # Author:       Kelly Chang
-# Date:         Sep 2017
+# Date:         Oct 2017
 # Version:      1.0
 # 
 # Description:  Helper R function which computes the mean fractional current
@@ -10,7 +10,7 @@
 
 get_boot_data<-function(filepath, idx){
     # read original data
-    datadf<-read.csv(filepath)
+    datadf<-vroom::vroom(filepath, show_col_types = F) %>% as.data.frame()
     expdf<-unique(datadf[,c("conc","exp")])
     expdf<-expdf[with(expdf,order(conc,exp)),]
 

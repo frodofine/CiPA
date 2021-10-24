@@ -1,7 +1,7 @@
 # File:         model_init.R
 # Author:       Kelly Chang
 #               Zhihua Li
-# Date:         Sep 2017
+# Date:         Oct 2017
 # Version:      1.0
 # 
 # Description:  Helper R function to initialize a drug binding model and run
@@ -18,12 +18,27 @@ model_init<-function(modelname, states, pars, pnames, fulltimes, eventdata, nbea
 
     mymodel<-list()
     mymodel$run_simulation<-function(initstates, pars, timepoints, events=NULL){
+
         pars["starttime"]<-unclass(as.POSIXct(strptime(date(),"%c")))[1]
-        try({out <- ode(initstates, timepoints, "derivs", pars, dllname=modelname,
-            initfunc="initmod", nout=0, rtol=1e-3, atol=1e-6, method="lsoda",
-            events=events)});
-        if(!exists("out")||inherits(out,"try-error")||length(out[,1])!=length(timepoints) || !all(out[,1]==timepoints) || any(is.nan(out)))
+        try({
+            out <- ode(
+                initstates,
+                timepoints,
+                derivs,
+                pars,
+                nout=0, rtol=1e-3, atol=1e-6, method="lsoda", events=events
+            )
+        })
+        
+        if(!exists("out") ||
+            inherits(out,"try-error") ||
+            length(out[,1]) != length(timepoints) ||
+            !all(out[,1]==timepoints) ||
+            any(is.nan(out))
+          ) {
             return(c())
+        }
+        
         out
     }
 
@@ -57,8 +72,10 @@ model_init<-function(modelname, states, pars, pnames, fulltimes, eventdata, nbea
         stop("Solving error during sweep initialization!")
 
     mymodel$controlsweeps<-function() ctlsweeps
+    mymodel$fulltimes<-function() fulltimes
 
     mymodel$run_drug<-function(ind, conc){
+
         states<-ctlstates
         states["D"]<-conc
 
@@ -69,12 +86,15 @@ model_init<-function(modelname, states, pars, pnames, fulltimes, eventdata, nbea
         # close channel in presence of drug
         states["V"]<- -80
         pars["starttime"]<-unclass(as.POSIXct(strptime(date(),"%c")))[1]
-        out<-mymodel$run_simulation(states, pars, closingtimes)
+
+        out <- mymodel$run_simulation(states, pars, closingtimes)
+
         if(length(out)==0)
             return(out)
+        
         states[sidx!=0]<-out[nrow(out),sidx]
 
-        drugsweeps<<-mymodel$run_sweeps(states, pars)
+        drugsweeps <- mymodel$run_sweeps(states, pars)
         drugsweeps
     }
 
